@@ -365,10 +365,8 @@ evicted after 30 minutes of inactivity so the map can't grow unbounded.
 ```
 localhost/
 ├── README.md                 ← you are here
+├── LICENSE.md                ← MIT license
 ├── GETTING_STARTED.md        ← setup, every test command, macOS + Linux
-├── docs/
-│   ├── 01-objectives-explained-ar.md
-│   └── 02-audit-checklist-ar.md
 └── lc/
     ├── Cargo.toml            ← package "lc", binary "localhost", dep: libc
     ├── config/
