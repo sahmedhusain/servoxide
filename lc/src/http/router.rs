@@ -1,10 +1,3 @@
-//! Request routing: match a route, enforce methods, serve static files (GET),
-//! generate directory listings, and produce error responses with configured or
-//! built-in error pages.
-//!
-//! POST and DELETE are dispatched here but their bodies are handled in M5; CGI
-//! routes are wired in M7.
-
 use std::fs;
 use std::path::{Component, Path};
 

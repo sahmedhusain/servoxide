@@ -1,16 +1,10 @@
-//! Hand-written tokenizer + recursive-descent parser for the config grammar.
-//! No regex, no parser crates. Errors are collected (with line numbers) rather
-//! than aborting at the first problem.
-
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::str::FromStr;
 
 use super::{Config, ParseOutcome, Route, ServerConfig};
 
-// ---------------------------------------------------------------------------
 // Tokenizer
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
 enum Tok {
@@ -83,9 +77,7 @@ fn tokenize(input: &str) -> Vec<Lexed> {
     out
 }
 
-// ---------------------------------------------------------------------------
 // Parser
-// ---------------------------------------------------------------------------
 
 struct Parser {
     toks: Vec<Lexed>,
@@ -410,9 +402,7 @@ fn parse_size(s: &str) -> Result<usize, String> {
         })
 }
 
-// ---------------------------------------------------------------------------
 // Public entry point + cross-server validation
-// ---------------------------------------------------------------------------
 
 /// Parse a config string. Always returns the surviving servers plus the list
 /// of all errors encountered (parse errors and duplicate-binding conflicts).
@@ -462,9 +452,7 @@ pub fn parse(input: &str) -> ParseOutcome {
     }
 }
 
-// ---------------------------------------------------------------------------
 // Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

@@ -1,16 +1,3 @@
-//! HTTP/1.1 request parsing.
-//!
-//! Parsing is split in two so the server can make a decision in between: first
-//! [`parse_head`] reads the request line and headers (which reveal the `Host`
-//! and thus which `server` block and body-size limit apply), then
-//! [`decode_body`] consumes the body according to `Content-Length` or
-//! `Transfer-Encoding: chunked`.
-//!
-//! Both operate on the whole accumulated buffer and report [`HeadStatus::NeedMore`]
-//! / [`BodyStatus::NeedMore`] when more bytes are required, so the caller can
-//! feed one `read` per event and retry without keeping a hand-rolled state
-//! machine. Header sections are small, so re-scanning per read is cheap.
-
 use std::collections::HashMap;
 
 /// Upper bound on the request line + headers section. Beyond this we give up

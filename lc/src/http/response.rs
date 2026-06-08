@@ -1,5 +1,3 @@
-//! HTTP response model and serialization.
-
 use super::reason_phrase;
 
 /// A response under construction. `Content-Length` and `Connection` are added

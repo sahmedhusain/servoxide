@@ -1,25 +1,3 @@
-//! Configuration model and parser entry point.
-//!
-//! The grammar is nginx-flavoured:
-//!
-//! ```nginx
-//! server {
-//!     host        127.0.0.1;
-//!     port        8080;
-//!     server_name example.com;
-//!     error_page  404 /errors/404.html;
-//!     client_max_body_size 1m;
-//!     route /uploads {
-//!         methods   GET POST DELETE;
-//!         root      /var/www/uploads;
-//!         index     index.html;
-//!         autoindex on;
-//!         cgi       .py /usr/bin/python3;
-//!         redirect  301 https://new.example.com/;
-//!     }
-//! }
-//! ```
-
 use std::collections::HashMap;
 
 mod parser;

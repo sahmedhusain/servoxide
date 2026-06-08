@@ -1,16 +1,3 @@
-//! CGI/1.1 execution.
-//!
-//! We `fork` a child, wire its stdin/stdout to pipes, set the CGI environment,
-//! `chdir` into the script's directory (so relative paths resolve), and
-//! `execve` the interpreter. The parent feeds the request body to the child's
-//! stdin, reads its stdout until EOF, and reaps it — killing it if it overruns
-//! a deadline so a hung script can't wedge the server.
-//!
-//! This is the one place the server blocks the event loop: while a CGI request
-//! runs, other clients wait. CGI requests are not part of the siege empty-page
-//! benchmark, so this does not affect the availability target, and the deadline
-//! bounds the worst case.
-
 use std::ffi::CString;
 use std::io;
 use std::path::Path;

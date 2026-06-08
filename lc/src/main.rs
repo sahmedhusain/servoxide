@@ -1,10 +1,3 @@
-//! Localhost — a single-threaded, single-process HTTP/1.1 server.
-//!
-//! `main` parses the config, reports any errors (non-fatally — surviving
-//! servers still start, per the audit's graceful-degradation requirement),
-//! then hands the config to [`server::Server`], which binds every listener and
-//! runs the single event loop.
-
 mod cgi;
 mod config;
 mod cookies;
@@ -18,7 +11,9 @@ use std::process::ExitCode;
 const DEFAULT_CONFIG: &str = "config/default.conf";
 
 fn main() -> ExitCode {
-    let path = std::env::args().nth(1).unwrap_or_else(|| DEFAULT_CONFIG.to_string());
+    let path = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| DEFAULT_CONFIG.to_string());
 
     let src = match std::fs::read_to_string(&path) {
         Ok(s) => s,

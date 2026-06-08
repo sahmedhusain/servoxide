@@ -1,9 +1,3 @@
-//! Cookie parsing and an in-memory session store.
-//!
-//! Each connection that arrives without a valid `session_id` cookie is issued
-//! one (128 random bits, hex-encoded) via `Set-Cookie`. Sessions live in a
-//! `HashMap` and are evicted after a TTL so the map cannot grow without bound.
-
 use std::collections::HashMap;
 use std::io::Read;
 use std::time::{Duration, Instant};

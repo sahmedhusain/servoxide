@@ -1,5 +1,3 @@
-//! Minimal extension -> Content-Type mapping.
-
 /// Guess a Content-Type from a file path's extension, defaulting to
 /// `application/octet-stream` for unknown or extension-less files.
 pub fn mime_for(path: &str) -> &'static str {

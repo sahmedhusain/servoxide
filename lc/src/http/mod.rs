@@ -1,11 +1,9 @@
-//! HTTP types and helpers.
-
 mod mime;
 mod request;
 mod response;
 mod router;
 
-pub use request::{decode_body, parse_head, BodyStatus, HeadStatus, Request};
+pub use request::{BodyStatus, HeadStatus, Request, decode_body, parse_head};
 pub use router::{error_response, handle};
 
 /// Reason phrase for a status code. Covers the codes this server emits.

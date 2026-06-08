@@ -1,5 +1,3 @@
-//! Low-level socket helpers built directly on `libc`.
-
 use std::io;
 use std::mem;
 
