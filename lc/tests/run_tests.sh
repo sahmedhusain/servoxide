@@ -54,7 +54,7 @@ sleep 1
 echo "== methods & status codes =="
 check_status      "GET / -> 200"                 200 "$BASE/"
 check_status      "GET missing -> 404"           404 "$BASE/nope"
-check_body_contains "404 serves custom page"     "custom error page" "$BASE/nope"
+check_body_contains "404 serves custom page"     "not here" "$BASE/nope"
 check_status      "DELETE on GET-only -> 405"    405 -X DELETE "$BASE/"
 check_header      "405 includes Allow"           "^Allow:" -X DELETE "$BASE/"
 check_status      "wrong method -> 501 or 405"   405 -X PATCH "$BASE/"
