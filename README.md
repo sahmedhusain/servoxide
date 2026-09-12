@@ -1,238 +1,131 @@
-# Localhost — a from-scratch HTTP/1.1 server in Rust
+# ⚙️ ServOxide
 
-A single-process, single-threaded **HTTP/1.1 web server** written in Rust using
-only the `libc` crate for system calls. No `tokio`, no `nix`, no web framework —
-the socket handling, event loop, HTTP parsing, CGI, sessions, and config parser
-are all hand-written.
+[![Rust](https://img.shields.io/badge/Rust-2021-000000?style=flat&logo=rust)](https://www.rust-lang.org/)
+[![OS Syscalls](https://img.shields.io/badge/Syscalls-libc%20only-blue)](#-system-architecture)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE.md)
 
-> **In one sentence:** it does what NGINX does at a small scale — serves files,
-> handles uploads, runs CGI scripts, manages cookies — but every byte of it is
-> code you can read and explain.
+**ServOxide** is a high-performance, single-process, non-blocking **HTTP/1.1 Web Server** written from scratch in Rust using only `libc` for system calls. Operating without external async runtimes (`tokio`), wrapper crates (`nix`), or web frameworks, ServOxide implements its socket multiplexing event loop, HTTP parser, NGINX-style configuration engine, CGI process spawner, and session cookie manager by hand.
 
 ---
 
-## Table of contents
+## ⚡ Key Highlights
 
-1. [For the impatient (quick start)](#for-the-impatient-quick-start)
-2. [What is an HTTP server? (plain language)](#what-is-an-http-server-plain-language)
-3. [Architecture at a glance](#architecture-at-a-glance)
-4. [The single event loop (the heart)](#the-single-event-loop-the-heart)
-5. [How one request flows through the server](#how-one-request-flows-through-the-server)
-6. [A connection's life (state machine)](#a-connections-life-state-machine)
-7. [Module-by-module reference](#module-by-module-reference)
-8. [Configuration file reference](#configuration-file-reference)
-9. [Features & supported behavior](#features--supported-behavior)
-10. [CGI execution explained](#cgi-execution-explained)
-11. [Cookies & sessions](#cookies--sessions)
-12. [Project layout](#project-layout)
-13. [Testing & verification](#testing--verification)
-14. [Design decisions & limitations](#design-decisions--limitations)
-15. [Further docs](#further-docs)
+- **Single Event Loop Architecture**: Governed by exactly one multiplexing OS call per tick (`epoll` on Linux, `kqueue` on macOS) via level-triggered non-blocking sockets.
+- **Pure `libc` Syscall Implementation**: Zero reliance on heavy async runtimes or third-party web frameworks.
+- **NGINX-Style Config Engine**: Hand-written recursive-descent parser supporting virtual hosts, custom error pages, route prefixes, static assets, autoindexing, and redirects.
+- **CGI Script Runner**: Process spawner (`fork` + `execve`) with pipe I/O, script directory change, environment mapping (`QUERY_STRING`, `CONTENT_LENGTH`), and 10-second timeout enforcement.
+- **Stateful Cookie & Session Management**: 128-bit cryptographic session tracking, visit counting, and 30-minute idle TTL memory cleanup.
 
 ---
 
-## For the impatient (quick start)
+## 📋 Table of Contents
 
-```bash
-cd lc
-cargo build --release
-./target/release/localhost config/default.conf
-# then open http://127.0.0.1:8080/ in a browser
-```
-
-Full setup (prerequisites, every test command, macOS **and** Linux) lives in
-[GETTING_STARTED.md](GETTING_STARTED.md).
-
----
-
-## What is an HTTP server? (plain language)
-
-When you open `http://127.0.0.1:8080/` in a browser, the browser sends a small
-text message called a **request**:
-
-```
-GET / HTTP/1.1
-Host: localhost
-
-```
-
-The server reads it, figures out what's being asked for, and sends back a
-**response**:
-
-```
-HTTP/1.1 200 OK
-Content-Type: text/html
-Content-Length: 376
-
-<!DOCTYPE html> ...
-```
-
-That request/response exchange over TCP is the whole job. The hard part is doing
-it for **many clients at once** without using threads — which is exactly what
-this project demonstrates with a single event loop.
+- [Key Highlights](#-key-highlights)
+- [System Architecture](#-system-architecture)
+- [Event Loop & Single-Thread State Machine](#-event-loop--single-thread-state-machine)
+- [Request Flow Sequence](#-request-flow-sequence)
+- [Configuration Reference](#-configuration-reference)
+- [Setup & Execution](#-setup--execution)
+- [Project Directory Structure](#-project-directory-structure)
+- [License](#-license)
 
 ---
 
-## Architecture at a glance
+## 🏗️ System Architecture
 
 ```mermaid
 graph TD
-    A[main.rs<br/>entry point] --> B[config<br/>parse the .conf file]
-    A --> C[server::Server<br/>bind + run]
-    C --> D[poll<br/>epoll / kqueue]
-    C --> E[net<br/>sockets]
-    C --> F[http<br/>request · response · router · mime]
-    C --> G[cookies<br/>sessions]
-    F --> H[cgi<br/>fork + execve]
-
-    style D fill:#ffe9b3,stroke:#b8860b
-    style F fill:#cdeffd,stroke:#1e6fa8
-    style C fill:#d6f5d6,stroke:#2e7d32
+    A[main.rs Application Bootstrapper] --> B[Config Engine: Parse NGINX-style .conf File]
+    A --> C[Server Engine: Bind Sockets & Run Loop]
+    
+    C --> D[OS Multiplexer: epoll Linux / kqueue macOS]
+    C --> E[Non-blocking Network Sockets - net.rs]
+    C --> F[HTTP Protocol Engine: Request Parser / Response Builder]
+    C --> G[Session Store: 128-bit Cookie Manager]
+    
+    F --> H[CGI Process Spawner: fork + execve]
+    F --> I[Static File Router & Autoindex Generator]
 ```
-
-- **`main`** reads the config, reports errors, and starts the server.
-- **`config`** turns the text file into typed structs.
-- **`server`** owns everything at runtime and runs the loop.
-- **`poll`** is the OS multiplexer — the one place we ask "which sockets are
-  ready?". `epoll` on Linux, `kqueue` on macOS, behind one interface.
-- **`net`** creates non-blocking listening sockets.
-- **`http`** parses requests and builds responses; `router` decides what to do.
-- **`cgi`** runs external scripts; **`cookies`** tracks sessions.
 
 ---
 
-## The single event loop (the heart)
-
-The most important rule of the project: **one call to the OS multiplexer per
-loop tick**, and **every** `accept` / `read` / `write` happens only because that
-call said a socket was ready.
+## 📐 Event Loop & Single-Thread State Machine
 
 ```mermaid
 flowchart TD
-    start([Server::run]) --> poll["poller.poll(&mut events, 1s)<br/>★ the ONE multiplexing call"]
-    poll --> loop{for each ready fd}
-    loop -->|listener fd| acc["accept_all()<br/>register new clients"]
-    loop -->|client readable| rd["handle_read()<br/>exactly ONE read syscall"]
-    loop -->|client writable| wr["handle_write()<br/>exactly ONE write syscall"]
-    acc --> sweep
-    rd --> parse{request<br/>complete?}
-    parse -->|no| sweep[sweep_timeouts]
-    parse -->|yes| route["router builds Response<br/>switch to WRITABLE"]
-    route --> sweep
-    wr --> done{fully<br/>written?}
-    done -->|no| sweep
-    done -->|keep-alive| reset["drain request,<br/>re-arm READABLE"]
-    done -->|close| rm["remove_client()<br/>close + free"]
-    reset --> sweep
-    rm --> sweep
-    sweep --> poll
+    Start([Server Event Loop]) --> Poll["poller.poll(&mut events, 1s)<br/>★ Single Multiplexing Syscall"]
+    Poll --> Loop{Iterate Ready FDs}
+    
+    Loop -->|Listener FD| Accept["accept_all()<br/>Register new non-blocking socket"]
+    Loop -->|Client Readable| Read["handle_read()<br/>Execute exactly ONE read syscall"]
+    Loop -->|Client Writable| Write["handle_write()<br/>Execute exactly ONE write syscall"]
+    
+    Read --> CheckComplete{Request Head Complete?}
+    CheckComplete -- No --> TimeoutSweep
+    CheckComplete -- Yes --> Route["Route Request -> Build Response -> Mark WRITABLE"]
+    Route --> TimeoutSweep
+    
+    Write --> CheckWritten{Entire Response Sent?}
+    CheckWritten -- No --> TimeoutSweep
+    CheckWritten -- KeepAlive --> Reset["Drain Request Buffer -> Re-arm READABLE"]
+    CheckWritten -- Close --> Remove["remove_client()<br/>epoll/kqueue delete + close(fd)"]
+    
+    Reset & Remove --> TimeoutSweep["sweep_timeouts()<br/>Close 60s idle / 30s stalled connections"]
+    TimeoutSweep --> Poll
 ```
-
-**The golden rules (what the audit checks):**
-
-| Rule | How it's guaranteed |
-|---|---|
-| Only one `epoll`/`kqueue` call governs all I/O | a single `poller.poll()` at the top of each tick |
-| One `read` **and** one `write` per client per event | `handle_read` / `handle_write` each do exactly one syscall |
-| All sockets non-blocking | `net::set_nonblocking` on every fd |
-| Every return value checked | `<0` / `EAGAIN` / `0`(EOF) handled everywhere |
-| Error on a socket → client removed | `remove_client` = `poll.delete` + `close` + drop |
-| Never blocks the loop | level-triggered readiness; the poller re-fires while data remains, so we never loop-until-EAGAIN |
 
 ---
 
-## How one request flows through the server
+## 📐 Request Flow Sequence
 
 ```mermaid
 sequenceDiagram
-    participant B as Browser
-    participant L as Event loop
-    participant P as http::parse_head / decode_body
-    participant R as http::router
-    participant S as SessionStore
-    participant FS as Filesystem / CGI
+    participant Client as Web Browser / HTTP Client
+    participant Loop as ServOxide Event Loop
+    participant HTTP as HTTP Parser & Router
+    participant CGI as CGI Subprocess (Python)
+    participant Session as Session Store
 
-    B->>L: TCP connect
-    L->>L: accept() → register fd (READABLE)
-    B->>L: GET /index.html HTTP/1.1
-    L->>L: handle_read() → ONE read, append to buffer
-    L->>P: parse_head(buffer)
-    P-->>L: method, path, headers, Host
-    L->>L: select virtual host by Host header
-    L->>P: decode_body (Content-Length / chunked, enforce 413)
-    P-->>L: body bytes
-    L->>R: handle(request, server, keep_alive)
-    R->>FS: read file / run CGI / write upload
-    FS-->>R: bytes or status
-    R-->>L: Response (status, headers, body)
-    L->>S: touch(cookie) → session + visit count
-    S-->>L: Set-Cookie if new
-    L->>L: switch fd to WRITABLE
-    L->>B: handle_write() → ONE write (HTTP response)
-    L->>L: keep-alive? re-arm READABLE : close
+    Client->>Loop: TCP Connection Request
+    Loop->>Loop: accept() -> Register Socket (READABLE)
+    Client->>Loop: GET /cgi/test.py HTTP/1.1
+    Loop->>HTTP: parse_request(buffer)
+    HTTP-->>Loop: Request Struct (Headers, Virtual Host, Path)
+    
+    alt Static File Route
+        HTTP->>HTTP: Read File from Root Directory
+    else CGI Route (.py)
+        HTTP->>CGI: fork() & execve(/usr/bin/python3, script)
+        CGI-->>HTTP: Read Script STDOUT Output
+    end
+    
+    HTTP->>Session: touch_session(cookie)
+    Session-->>HTTP: Return Updated Visit Count & Set-Cookie
+    HTTP-->>Loop: Response Struct (Status 200 OK, Body, Headers)
+    Loop->>Client: Send HTTP Response (WRITABLE)
+    Loop->>Loop: Connection: keep-alive -> Re-arm READABLE
 ```
 
 ---
 
-## A connection's life (state machine)
+## ⚙️ Configuration Reference
 
-```mermaid
-stateDiagram-v2
-    [*] --> Reading: accept()
-    Reading --> Reading: partial request (need more)
-    Reading --> Writing: request complete → response queued
-    Reading --> Closed: EOF / error / 30s request timeout (408)
-    Writing --> Writing: partial write (socket buffer full)
-    Writing --> Reading: keep-alive (drain + re-arm READABLE)
-    Writing --> Closed: Connection: close / error
-    Reading --> Closed: 60s idle timeout
-    Closed --> [*]: poll.delete + close + drop buffers
-```
-
----
-
-## Module-by-module reference
-
-| Path | Responsibility |
-|---|---|
-| `src/main.rs` | Read config path (arg or `config/default.conf`), parse, print errors, `bind`, `run`. |
-| `src/poll/mod.rs` | `Poller` / `Interest` / `Event` abstraction; picks backend at compile time. |
-| `src/poll/epoll.rs` | Linux `epoll` backend (level-triggered). |
-| `src/poll/kqueue.rs` | macOS `kqueue` backend (level-triggered). |
-| `src/net.rs` | `set_nonblocking`, `bind_listener` (socket/setsockopt/bind/listen). |
-| `src/config/mod.rs` | Config data model (`Config`, `ServerConfig`, `Route`). |
-| `src/config/parser.rs` | Hand-written tokenizer + recursive-descent parser; error collection; duplicate-bind detection. |
-| `src/http/request.rs` | `parse_head` (request line + headers), `decode_body` (Content-Length + chunked), 413 enforcement. |
-| `src/http/response.rs` | `Response` builder; always sets `Content-Length` + `Connection`. |
-| `src/http/router.rs` | Route matching, methods/405, static GET, autoindex, uploads, delete, CGI dispatch, error pages. |
-| `src/http/mime.rs` | Extension → Content-Type. |
-| `src/http/mod.rs` | Re-exports, `reason_phrase`, `wants_keep_alive`. |
-| `src/server/mod.rs` | The event loop, client state, virtual-host selection, timeouts, session wiring. |
-| `src/cgi/mod.rs` | `fork`/`execve` CGI runner; pipes; env vars; `waitpid` + kill-on-timeout. |
-| `src/cookies/mod.rs` | Cookie parsing + in-memory session store with TTL eviction. |
-
----
-
-## Configuration file reference
-
-The config grammar is NGINX-flavoured. Blocks use `{ }`, directives end with
-`;`, comments start with `#`.
+ServOxide reads NGINX-formatted `.conf` configuration files:
 
 ```nginx
 server {
-    host        127.0.0.1;          # bind address
-    port        8080;               # one or more ports (e.g. "port 8080 8081;")
-    server_name localhost;          # virtual-host name(s)
+    host        127.0.0.1;
+    port        8080;
+    server_name localhost;
 
-    client_max_body_size 1m;        # 413 above this (supports k / m / g)
+    client_max_body_size 10m;
     error_page  404 errors/404.html;
-    error_page  500 errors/500.html;
 
     route / {
-        methods   GET;              # allowed methods (others → 405)
-        root      www;              # filesystem root for this prefix
-        index     index.html;       # default file when path is a directory
-        autoindex off;              # directory listing on/off
+        methods   GET;
+        root      www;
+        index     index.html;
+        autoindex off;
     }
 
     route /uploads {
@@ -244,191 +137,74 @@ server {
     route /cgi {
         methods   GET POST;
         root      www/cgi;
-        cgi       .py /usr/bin/python3;   # ext → interpreter
-    }
-
-    route /old {
-        redirect  301 http://127.0.0.1:8080/;
+        cgi       .py /usr/bin/python3;
     }
 }
 ```
 
-**Directive summary**
+---
 
-| Scope | Directive | Meaning |
-|---|---|---|
-| server | `host` | IPv4 bind address |
-| server | `port` | one or more ports |
-| server | `server_name` | vhost name(s); first block for a `host:port` is the default |
-| server | `client_max_body_size` | upload limit (bytes, or `k`/`m`/`g`) |
-| server | `error_page <code> <path>` | custom error page |
-| route | `methods` | accepted HTTP methods |
-| route | `root` | filesystem root the route prefix maps to |
-| route | `index` | default file for a directory |
-| route | `autoindex on/off` | directory listing |
-| route | `cgi <.ext> <bin>` | run a CGI interpreter for an extension |
-| route | `redirect <code> <url>` | HTTP redirect |
+## 🚀 Setup & Execution
 
-**Config validation**
+### Prerequisites
 
-```mermaid
-flowchart LR
-    F[.conf file] --> T[tokenize] --> P[parse blocks]
-    P --> E{errors?}
-    E -->|collect all,<br/>don't stop| V[validate]
-    V --> D{duplicate<br/>host:port:name?}
-    D -->|yes| drop[drop that server,<br/>log error]
-    D -->|no| keep[keep server]
-    drop --> R[run with valid servers]
-    keep --> R
-    R --> Z{any servers left?}
-    Z -->|no| exit[exit with error]
-    Z -->|yes| serve[start serving]
-```
-
-A duplicate `host:port:server_name` is rejected; a single broken `server` block
-is logged and skipped so the rest keep serving (**graceful degradation**).
+- **Rust**: Cargo and `rustc` (1.70+) installed.
+- **POSIX Platform**: macOS (`kqueue`) or Linux (`epoll`).
 
 ---
 
-## Features & supported behavior
+### Build & Run
 
-- **Methods:** GET, POST, DELETE (others → 501; not-allowed-on-route → 405)
-- **Status codes emitted:** 200, 201, 204, 301, 400, 403, 404, 405, 408, 413, 500, 501
-- **Bodies:** `Content-Length` and `Transfer-Encoding: chunked`
-- **Uploads:** raw body and `multipart/form-data`
-- **Static files:** MIME by extension, directory `index`, `autoindex` listing,
-  path-traversal protection (`..` rejected)
-- **Virtual hosts:** selected by `Host` header (first block = default)
-- **Keep-alive:** HTTP/1.1 persistent connections
-- **Error pages:** custom (from config) with built-in HTML fallbacks
-- **Timeouts:** 60s idle close, 30s stalled-request → 408
-- **CGI:** Python (chunked + unchunked)
-- **Cookies/sessions:** 128-bit session id, in-memory store, TTL eviction
+1. **Clone Repository**:
+   ```bash
+   git clone https://github.com/sahmedhusain/servoxide.git
+   cd servoxide/lc
+   ```
 
----
+2. **Compile Release Binary**:
+   ```bash
+   cargo build --release
+   ```
 
-## CGI execution explained
+3. **Launch ServOxide**:
+   ```bash
+   ./target/release/servoxide config/default.conf
+   ```
+   *ServOxide will start listening at `http://127.0.0.1:8080/`.*
 
-CGI runs an external program (here, Python) and treats its stdout as an HTTP
-response. We `fork` a child, wire pipes, set the CGI environment, and `execve`.
-
-```mermaid
-sequenceDiagram
-    participant R as router (parent)
-    participant K as kernel
-    participant C as CGI child (python3)
-
-    R->>K: pipe() x2 (stdin, stdout)
-    R->>K: fork()
-    Note over C: child: dup2 pipes → fd 0/1,<br/>chdir to script dir,<br/>set REQUEST_METHOD, QUERY_STRING,<br/>CONTENT_LENGTH, PATH_INFO, ...
-    C->>K: execve(/usr/bin/python3, script)
-    R->>C: write request body to stdin
-    R->>C: close stdin (EOF)
-    C->>R: write HTTP headers + body to stdout
-    R->>R: poll(stdout) with 10s deadline
-    C->>R: EOF
-    R->>K: waitpid (kill if over deadline)
-    R->>R: parse "Status:"/headers/body → Response
-```
-
-Key points the audit asks about:
-- **chunked vs unchunked:** the server fully decodes the body *before* CGI, then
-  passes it on stdin with `CONTENT_LENGTH` — so the script sees the same thing
-  either way.
-- **relative paths:** we `chdir` into the script's directory.
-- **`PATH_INFO`:** set to the script's absolute path.
+4. **Execute End-to-End Audit Suite**:
+   ```bash
+   ./tests/run_tests.sh
+   ```
 
 ---
 
-## Cookies & sessions
-
-```mermaid
-flowchart LR
-    req[Request] --> ck{session_id<br/>cookie?}
-    ck -->|valid| inc[visits += 1]
-    ck -->|none/expired| new[generate 128-bit id<br/>visits = 1]
-    new --> sc[add Set-Cookie]
-    inc --> resp[Response]
-    sc --> resp
-    resp --> hdr[X-Session-Visits header]
-```
-
-First request gets a `Set-Cookie: session_id=...; Path=/; HttpOnly`. Subsequent
-requests carrying the cookie increment a per-session visit counter. Sessions are
-evicted after 30 minutes of inactivity so the map can't grow unbounded.
-
----
-
-## Project layout
+## 📂 Project Directory Structure
 
 ```
-localhost/
-├── README.md                 ← you are here
-├── LICENSE.md                ← MIT license
-├── GETTING_STARTED.md        ← setup, every test command, macOS + Linux
+servoxide/
+├── README.md               # Main documentation
+├── LICENSE.md              # MIT License
+├── GETTING_STARTED.md      # Setup, audit tests, and macOS/Linux instructions
 └── lc/
-    ├── Cargo.toml            ← package "lc", binary "localhost", dep: libc
+    ├── Cargo.toml          # Rust package manifest (name: servoxide)
     ├── config/
-    │   └── default.conf
+    │   └── default.conf    # Server configuration file
     ├── src/
-    │   ├── main.rs
-    │   ├── poll/{mod,epoll,kqueue}.rs
-    │   ├── net.rs
-    │   ├── config/{mod,parser}.rs
-    │   ├── http/{mod,request,response,router,mime}.rs
-    │   ├── server/mod.rs
-    │   ├── cgi/mod.rs
-    │   └── cookies/mod.rs
-    ├── www/                  ← document roots
-    │   ├── index.html
-    │   ├── example/index.html
-    │   ├── listing/notes.txt
-    │   ├── uploads/
-    │   └── cgi/hello.py
-    ├── errors/               ← custom error pages (404, 500)
-    └── tests/
-        ├── run_tests.sh      ← 27 end-to-end checks
-        ├── stress.sh         ← siege wrapper
-        └── configs/          ← bad-config fixtures
+    │   ├── main.rs         # Bootstrapper & CLI parser
+    │   ├── poll/           # epoll (Linux) and kqueue (macOS) multiplexing drivers
+    │   ├── net.rs          # Non-blocking socket listener factory
+    │   ├── config/         # NGINX-style configuration lexer & recursive parser
+    │   ├── http/           # HTTP request parser, response builder, and router
+    │   ├── server/         # Core event loop and client connection manager
+    │   ├── cgi/            # CGI process spawner & pipe IO runner
+    │   └── cookies/        # Session store and 128-bit token manager
+    ├── www/                # Document root files & CGI scripts
+    └── tests/              # End-to-end audit test scripts & fixtures
 ```
 
 ---
 
-## Testing & verification
+## 📄 License
 
-| What | Command | Result |
-|---|---|---|
-| Unit tests | `cargo test` | 28 pass (parser, request, router, sessions) |
-| End-to-end suite | `./tests/run_tests.sh` | 27 pass (all audit cases) |
-| Stress / availability | `./tests/stress.sh` | **100%** availability, 0 failed of ~495k |
-| FD / memory leak | watch `lsof` / `ps` under siege | fds flat, RSS stable ~2MB |
-
-Step-by-step instructions, including manual `curl` commands for every single
-audit item and how to watch for leaks on each OS, are in
-[GETTING_STARTED.md](GETTING_STARTED.md).
-
----
-
-## Design decisions & limitations
-
-- **Level-triggered + one read/write per event.** This is the safe combination:
-  the poller re-fires while data remains, so we honor "one syscall per event"
-  without starving other clients (edge-triggered would force read-until-EAGAIN).
-- **CGI briefly blocks the loop.** The CGI child's pipes are drained with `poll`
-  on a 10-second deadline. While a script runs, other clients wait. This is an
-  accepted trade-off: CGI is not part of the siege static-page benchmark, and the
-  deadline bounds the worst case.
-- **Pipelining.** Keep-alive is fully supported; HTTP pipelining (multiple
-  requests in flight before responses) is handled best-effort by draining the
-  exact bytes of each completed request.
-- **Bonus not implemented:** a second CGI language and a second-language port of
-  the whole server are left out (optional).
-
----
-
-## Further docs
-
-- **[GETTING_STARTED.md](GETTING_STARTED.md)** — prerequisites, build, run, and
-  every test/audit command for macOS and Linux.
-- License: see [LICENSE.md](LICENSE.md).
+Distributed under the MIT License. See [LICENSE](LICENSE.md) for details.

@@ -1,10 +1,10 @@
 [package]
-name = "lc"
-version = "0.1.0"
-edition = "2024"
+name = "servoxide"
+version = "1.0.0"
+edition = "2021"
 
 [[bin]]
-name = "localhost"
+name = "servoxide"
 path = "src/main.rs"
 
 [dependencies]
