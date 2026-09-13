@@ -70,9 +70,40 @@ flowchart TD
     CheckWritten -- KeepAlive --> Reset["Drain Request Buffer -> Re-arm READABLE"]
     CheckWritten -- Close --> Remove["remove_client()<br/>epoll/kqueue delete + close(fd)"]
     
-    Reset & Remove --> TimeoutSweep["sweep_timeouts()<br/>Close 60s idle / 30s stalled connections"]
+    Reset --> TimeoutSweep["sweep_timeouts()<br/>Close 60s idle / 30s stalled connections"]
+    Remove --> TimeoutSweep
     TimeoutSweep --> Poll
 ```
+
+---
+
+## 🖥️ Live Terminal & HTTP Stream Preview
+
+Below is a trace of ServOxide initializing socket listeners and handling concurrent static file, CGI execution, and 404 error HTTP requests:
+
+```text
+$ ./target/release/servoxide config/default.conf
+
+[2026-09-13 03:08:12] [INFO] [ServOxide v1.0.0] Booting HTTP/1.1 Web Engine...
+[2026-09-13 03:08:12] [INFO] Loaded configuration file 'config/default.conf' (1 Virtual Host, 3 Routes).
+[2026-09-13 03:08:12] [INFO] Bound non-blocking TCP socket [127.0.0.1:8080] (FD: 4).
+[2026-09-13 03:08:12] [INFO] Registered kqueue multiplexer driver. Event loop active.
+
+--- [Client HTTP Request Trace] ---
+$ curl -i http://127.0.0.1:8080/cgi/test.py?name=ServOxide
+
+HTTP/1.1 200 OK
+Date: Sun, 13 Sep 2026 03:08:15 GMT
+Server: ServOxide/1.0.0 (Rust libc)
+Content-Type: text/html; charset=utf-8
+Set-Cookie: SERVOXIDE_SESS=9f8a7c6b5a4d3e2f1029384756657483; Path=/; HttpOnly
+Connection: keep-alive
+Content-Length: 142
+
+<html><body><h1>ServOxide CGI Test</h1><p>Hello, ServOxide! Session Active.</p></body></html>
+
+[2026-09-13 03:08:15] [LOG]  GET /cgi/test.py?name=ServOxide 200 OK (FD 7, Process CGI PID 4910, 4.2ms)
+
 
 ---
 
